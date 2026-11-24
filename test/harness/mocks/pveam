@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Attrappe für `pveam` – bietet Debian-13-Template (nur das wird unterstützt).
+set -uo pipefail
+
+STATE="${MOCK_STATE:?MOCK_STATE fehlt}"
+echo "pveam $*" >>"$STATE/pveam.log"
+
+case "${1:-}" in
+    list)
+        echo "local:vztmpl/debian-13-standard_13.0-1_amd64.tar.zst"
+        ;;
+    available)
+        echo "debian-13-standard     13.0-1  pve-container"
+        ;;
+    update|download)
+        ;;
+    *)
+        ;;
+esac

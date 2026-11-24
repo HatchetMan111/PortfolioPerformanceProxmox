@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Attrappe für `openssl rand -base64 N` – liefert ein festes Passwort.
+set -uo pipefail
+
+if [[ "${1:-}" == "rand" ]]; then
+    echo "TestPasswort1234"
+    exit 0
+fi
+exec /usr/bin/openssl "$@"

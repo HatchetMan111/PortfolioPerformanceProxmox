@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Attrappe für `curl` auf dem Proxmox-Host.
+#  * GitHub-API   → liefert ein Release-JSON mit Linux-gtk-Asset (x86_64) + .asc
+#  * direkter Download (tar.gz/.asc) → schreibt eine kleine Datei
+#  * http(s)://<ip>:<port>/... → gibt einen HTTP-Code aus (curl -w '%{http_code}')
+set -uo pipefail
+
+STATE="${MOCK_STATE:?MOCK_STATE fehlt}"
+echo "curl $*" >>"$STATE/curl.log"
+
+args=("$@")
+url="${args[${#args[@]}-1]}"
+out=""
+for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ "${args[$i]}" == "-o" ]]; then
+        out="${args[$((i + 1))]}"
+    fi
+done
+# -w '%{http_code}'?
+want_code=false
+for ((i = 0; i < ${#args[@]}; i++)); do
+    [[ "${args[$i]}" == "-w" ]] && want_code=true
+done
+
+case "$url" in
+    *api.github.com*)
+        cat <<'JSON'
+{
+  "tag_name": "0.90.0",
+  "assets": [
+    {
+      "browser_download_url": "https://github.com/portfolio-performance/portfolio/releases/download/0.90.0/PortfolioPerformance-0.90.0-linux.gtk.x86_64.tar.gz"
+    },
+    {
+      "browser_download_url": "https://github.com/portfolio-performance/portfolio/releases/download/0.90.0/PortfolioPerformance-0.90.0-linux.gtk.x86_64.tar.gz.asc"
+    }
+  ]
+}
+JSON
+        ;;
+    *PortfolioPerformance*.tar.gz.asc)
+        [[ -n "$out" ]] && echo "-----BEGIN PGP SIGNATURE-----" >"$out"
+        ;;
+    *PortfolioPerformance*.tar.gz)
+        # tar.gz-Download – eine winzige Datei genügt (wird im Inner entpackt,
+        # aber der Harness führt das Inner-Script NICHT aus).
+        [[ -n "$out" ]] && printf 'mock tarball\n' >"$out"
+        ;;
+    *"/vnc.html"*)
+        $want_code && printf '200'
+        ;;
+    *"/v1/"*)
+        $want_code && printf '401'
+        ;;
+    *"/api/health"*|*":8081"*|*":8082"*)
+        $want_code && printf '200'
+        ;;
+    *)
+        [[ -n "$out" ]] && : >"$out"
+        ;;
+esac
