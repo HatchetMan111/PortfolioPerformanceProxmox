@@ -199,6 +199,9 @@ check "PORT=9001 übergeben" has "$P/exec.env" "PORT=9001"
 check "REST_PORT=9002 übergeben" has "$P/exec.env" "REST_PORT=9002"
 check "noVNC-URL nutzt 9001" has "$P/out.log" ":9001/vnc.html"
 check "REST-URL nutzt 9002" has "$P/out.log" ":9002/v1"
+check "Summary: keine rohen ESC-Codes im Log" bash -c "! grep -qF '\\033' '$P/out.log'"
+check "Summary: Einzeiler wird genau 1x ausgegeben" bash -c "test \"\$(grep -cF 'wget -qLO -' '$P/out.log')\" -eq 1"
+check "Summary: Container-Zeile mit IP" has "$P/out.log" "läuft"
 
 # ── 7b. WebDAV (Mobile-App-Sync) ───────────────────────────────────────────
 step "WebDAV aktiv (--webdav-port 8083)"

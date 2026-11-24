@@ -93,8 +93,12 @@ LOG_FILE="/tmp/${APP_NAME}-installer-$(date +%Y%m%d-%H%M%S).log"
 ONE_LINER='bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/PortfolioPerformanceProxmox/main/install/portfolio-performance.sh)"'
 
 # ── Farben & Logging ───────────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'; BOLD='\033[1m'
+if [[ -t 1 ]]; then
+    RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
+    BLUE=$'\033[0;34m'; CYAN=$'\033[0;36m'; NC=$'\033[0m'; BOLD=$'\033[1m'
+else
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; NC=''; BOLD=''
+fi
 
 info()  { echo -e "${BLUE}ℹ${NC}  $1"; }
 ok()    { echo -e "${GREEN}✔${NC}  $1"; }
@@ -945,50 +949,49 @@ print_summary() {
     header "🏛️  Portfolio Performance ist bereit!"
     local ct_ip=""
     ct_ip=$(get_ct_ip "$CT_ID")
-    local novnc_url="http://${ct_ip:-<CT-IP>}:${PORT}/vnc.html"
-    local rest_url="http://${ct_ip:-<CT-IP>}:${REST_PORT}/v1"
+    local ip="${ct_ip:-<CT-IP>}"
+    local novnc_url="http://${ip}:${PORT}/vnc.html"
+    local rest_url="http://${ip}:${REST_PORT}/v1"
+
     local webdav_block=""
     if [[ "${WEBDAV_PORT:-0}" != "0" ]]; then
         webdav_block="
 
-  ${BOLD}📱 WebDAV – Mobile-App-Sync (offizielle PP-App, iOS/Android)${NC}
-     URL:        http://${ct_ip:-<CT-IP>}:${WEBDAV_PORT}/
-     Benutzer:   ${WEBDAV_USER}
-     Passwort:   ${WEBDAV_PASSWORD:-<im Container: /opt/portfolio-performance/.webdavpass.txt>}
-     In der PP-Mobile-App als WebDAV-Quelle eintragen und die .portfolio-Datei
-     öffnen (liegt persistent unter /opt/portfolio-performance/home)."
+  ${BOLD}📱 WebDAV – Sync mit der PP-Mobile-App (iOS/Android)${NC}
+     URL:       http://${ip}:${WEBDAV_PORT}/
+     Benutzer:  ${WEBDAV_USER}
+     Passwort:  ${WEBDAV_PASSWORD:-<im Container: /opt/portfolio-performance/.webdavpass.txt>}
+     In der App als WebDAV-Quelle eintragen und die .portfolio-Datei öffnen
+     (liegt persistent unter /opt/portfolio-performance/home)."
     fi
 
     cat <<SUM
 
-  ${GREEN}Portfolio Performance läuft als Desktop-App im Container und wird
-  im Browser ausgeliefert. Voller Zugriff von überall.${NC}
+  ${GREEN}${BOLD}✔ Container ${CT_ID} (${CT_HOSTNAME}) läuft${NC} – IP: ${ip}
 
-  ${BOLD}🌐 Zugriff im Browser (noVNC – volle PP-GUI)${NC}
-     URL:        ${novnc_url}
-     VNC-PW:     ${VNC_PASSWORD:-<leer – im Container unter /opt/portfolio-performance/.vncpass.txt>}
+  ${BOLD}1) PP im Browser öffnen${NC}  (noVNC = volle Desktop-GUI)
+       ${novnc_url}
+       VNC-Passwort:  ${VNC_PASSWORD:-<leer – siehe .vncpass.txt im Container>}
 
-  ${BOLD}🔌 REST-API (optional, für Home Assistant / Skripte / Automation)${NC}
-     Proxy-URL:  ${rest_url}
-     • In PP EINMAL aktivieren:  Preferences → „MCP Server & REST API“
-       → „Enable MCP server and REST API (localhost only)“ anhaken,
-       Port 5712 (Default) belassen, gewünschte Datei freigeben + speichern.
-     • Danach Token per Pairing holen (siehe README): POST ${rest_url%/v1}/v1/auth/requests
-     • Ohne Aktivierung liefert der Proxy 502 – das ist erwartet.
+  ${BOLD}2) REST-API (optional, z. B. Home Assistant / Skripte)${NC}
+       Proxy:  ${rest_url}
+       In PP einmalig aktivieren:  Preferences → „MCP Server & REST API“ →
+       „Enable MCP server and REST API (localhost only)“ anhaken, Port 5712
+       (Default) lassen, gewünschte Datei freigeben + speichern.
+       Token danach per Pairing:  POST ${rest_url}/auth/requests  (siehe README)
+       Liefert der Proxy 502, ist die API in PP noch nicht aktiv (erwartet).
 ${webdav_block}
 
-  ${BOLD}🔄 Verwaltung (auf dem Proxmox-Host)${NC}
-     Status:     ${ONE_LINER} --status
-     Update:     ${ONE_LINER} --update
-     Deinstall:  ${ONE_LINER} --uninstall
+  ${BOLD}3) Verwaltung auf dem Proxmox-Host${NC}
+       Einzeiler:  ${ONE_LINER}
+       Befehle:    <Einzeiler> --status      Status + diese URLs anzeigen
+                   <Einzeiler> --update      PP aktualisieren
+                   <Einzeiler> --uninstall   Container entfernen
 
-  ${BOLD}ℹ Hinweise${NC}
-     • PP ist Single-User – eine Desktop-Instanz, die du im Browser fernbedienst.
-     • Native Mobile-App-Sync („Web Server“-Komponente) steckt nicht im PP-Release.
-       Mit --webdav-port bekommst du stattdessen WebDAV-Sync der .portfolio-Datei
-       für die offizielle Mobile-App (siehe oben).
-     • Web-Frontend läuft über Software-Rendering (llvmpipe) – für flüssiges
-       Scrollen in PP reicht das; kein 3D-Bedarf.
+  ${BOLD}Hinweise${NC}
+       • PP ist Single-User: eine Desktop-Instanz, die du per Browser fernbedienst.
+       • Grafik läuft per Software-Rendering (llvmpipe) – für PP völlig ausreichend.
+       • Mobile-App-Sync (iOS/Android): siehe WebDAV-Block oben bzw. README (--webdav-port).
 SUM
 }
 
@@ -1006,8 +1009,8 @@ do_install() {
             pct destroy "$existing" --purge
         else
             die "Container $existing mit Hostname '$CT_HOSTNAME' existiert bereits.
-  Update:         ${ONE_LINER} --update
-  Neu aufsetzen:  ${ONE_LINER} --force"
+  Update:         <Einzeiler> --update
+  Neu aufsetzen:  <Einzeiler> --force"
         fi
     fi
 
@@ -1103,7 +1106,7 @@ do_update() {
     ct_id=$(find_ct_id_by_hostname || true)
     if [[ -z "$ct_id" ]]; then
         die "Kein Container mit Hostname '$CT_HOSTNAME' gefunden.
-  Erst installieren:  ${ONE_LINER}"
+  Erst installieren:  <Einzeiler> (siehe README)"
     fi
     CT_ID="$ct_id"
 
@@ -1158,7 +1161,7 @@ do_uninstall() {
         local answer=""
         if ! read -r -t 60 -p "Wirklich löschen? (ja/NEIN): " answer; then
             die "Keine Bestätigung erhalten (nicht-interaktiv?) – nichts gelöscht.
-  Erzwingen:  ${ONE_LINER} --uninstall --yes"
+  Erzwingen:  <Einzeiler> --uninstall --yes"
         fi
         if [[ "$answer" != "ja" ]]; then
             info "Abgebrochen – nichts gelöscht."
@@ -1179,7 +1182,7 @@ do_status() {
     ct_id=$(find_ct_id_by_hostname || true)
     if [[ -z "$ct_id" ]]; then
         warn "Kein Container mit Hostname '$CT_HOSTNAME' gefunden."
-        info "Installieren:  ${ONE_LINER}"
+        info "Installieren:  <Einzeiler> (siehe README)"
         return 0
     fi
     CT_ID="$ct_id"
