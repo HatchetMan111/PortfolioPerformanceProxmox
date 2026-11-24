@@ -101,6 +101,8 @@ if [[ -f "$S/create.args" ]]; then
     check "DHCP-IP" bash -c "grep -q -- 'ip=dhcp' <<<'$ARGS'"
     check "Passwort gesetzt" bash -c "grep -q -- '--password TestPasswort1234' <<<'$ARGS'"
     check "Debian-13-Template" bash -c "grep -q 'debian-13' <<<'$ARGS'"
+    check "Template nach Host-Arch gefiltert (_amd64)" bash -c "grep -q '_amd64' <<<'$ARGS'"
+    check "NICHT das arm64-Template genommen" bash -c "! grep -q '_arm64' <<<'$ARGS'"
 else
     bad "pct-create-Argumente wurden nicht protokolliert"
 fi
@@ -191,7 +193,24 @@ check "REST_PORT=9002 übergeben" has "$P/exec.env" "REST_PORT=9002"
 check "noVNC-URL nutzt 9001" has "$P/out.log" ":9001/vnc.html"
 check "REST-URL nutzt 9002" has "$P/out.log" ":9002/v1"
 
-# ── 8. --help ──────────────────────────────────────────────────────────────
+# ── 8. Spawn-Fehler wird erkannt (Arch-Mismatch-Falle) ─────────────────────
+step "Spawn-Fehler (pct create Exit 0, aber CT läuft nicht)"
+SP="$ROOT/state-spawnfail"
+mkdir -p "$SP"
+touch "$SP/pct.log" "$SP/pveam.log" "$SP/curl.log"
+: >"$SP/fail-spawn"   # pct-Mock meldet 'stopped' statt 'running'
+(
+    cd "$REPO" || exit 1
+    MOCK_STATE="$SP" \
+    PATH="$FAKEBIN:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+        bash "$INSTALLER" --yes --password TestPasswort1234
+) >"$SP/out.log" 2>&1
+RC=$?
+check "Spawn-Fehler Exit != 0" test "$RC" -ne 0
+check "Meldung 'läuft NICHT'" has "$SP/out.log" "läuft NICHT"
+check "Arch-Diagnose im Log" has "$SP/out.log" "Host-Architektur"
+
+# ── 9. --help ──────────────────────────────────────────────────────────────
 step "--help"
 bash "$INSTALLER" --help >"$ROOT/help.log" 2>&1
 check "Hilfe zeigt Einzeiler" has "$ROOT/help.log" 'bash -c "$(wget -qLO -'

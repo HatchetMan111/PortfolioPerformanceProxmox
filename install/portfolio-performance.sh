@@ -293,32 +293,72 @@ $(printf '%s\n' "$urls" | grep -E -- 'linux' | sed 's/^/    /')"
 }
 
 # ── Templatewahl ───────────────────────────────────────────────────────────
+host_deb_arch() {
+    # Debian-Architektur-Suffix für Templates (_amd64 / _arm64). Live-Grube
+    # (ProxSmartHome 2026-11-24): auf x86_64-Host wurde das arm64-Template
+    # genommen → sync_wait "Failed to spawn". Template-Auswahl MUSS nach
+    # Host-Arch filtern, NICHT blind `sort -rV` (rV wählt _arm64 vor _amd64).
+    local a
+    a=$(dpkg --print-architecture 2>/dev/null || uname -m || true)
+    case "$a" in
+        amd64|x86_64) echo "amd64" ;;
+        arm64|aarch64) echo "arm64" ;;
+        *) echo "$a" ;;
+    esac
+}
+
 template_for_debian() {
-    local major="$1"
+    local major="$1" want_arch="$2"
     pveam list local 2>/dev/null \
-        | grep -E "debian-${major}[^ ]*standard" \
+        | grep -E "debian-${major}[^ ]*standard[^ ]*_${want_arch}\.tar" \
         | sort -V | tail -1 | awk '{print $1}'
 }
 
 ensure_template() {
-    local major="$1" tpl=""
-    tpl=$(template_for_debian "$major")
+    local major="$1" tpl="" want_arch
+    want_arch=$(host_deb_arch)
+    tpl=$(template_for_debian "$major" "$want_arch")
     if [[ -z "$tpl" ]]; then
-        info "Kein Debian-${major}-Template lokal – lade es herunter ..."
+        info "Kein Debian-${major}-${want_arch}-Template lokal – lade es herunter ..."
         pveam update >/dev/null 2>&1 || true
         local avail
         avail=$(pveam available 2>/dev/null \
-                | grep -E "debian-${major}[^ ]*standard" | tail -1 | awk '{print $2}' || true)
+                | grep -E "debian-${major}[^ ]*standard[^ ]*_${want_arch}\.tar" \
+                | tail -1 | awk '{print $2}' || true)
         if [[ -z "$avail" ]]; then
             return 1
         fi
         pveam download local "$avail" >/dev/null 2>&1 || return 1
-        tpl=$(template_for_debian "$major")
+        tpl=$(template_for_debian "$major" "$want_arch")
     fi
     if [[ -z "$tpl" ]]; then
         return 1
     fi
     echo "$tpl"
+}
+
+verify_ct_started() {
+    # pct create --start 1 liefert Exit 0, AUCH wenn der Spawn scheitert
+    # (Fehler nur auf stderr, z. B. "Failed to spawn" bei Arch-Mismatch).
+    # Deshalb nach create/start aktiv pollen, ob der CT wirklich läuft.
+    local id="$1" tries=0 state=""
+    while true; do
+        state=$(pct status "$id" 2>/dev/null | awk '{print $2}' || true)
+        if [[ "$state" == "running" ]]; then
+            ok "Container $id läuft"
+            return 0
+        fi
+        tries=$((tries + 1))
+        if [[ $tries -ge 15 ]]; then
+            break
+        fi
+        sleep 1
+    done
+    err "Container $id läuft NICHT (Status: ${state:-unbekannt}) – trotz 'erstellt und gestartet'."
+    info "Häufigste Ursache: Host-Architektur ($(host_deb_arch)) passt nicht zum Template."
+    info "pct status $id && pct config $id | grep -E 'arch|rootfs'"
+    info "Zurücksetzen:  pct stop $id; pct destroy $id --purge  →  dann Installer erneut mit --debug."
+    return 1
 }
 
 ensure_ct_running() {
@@ -908,7 +948,8 @@ do_install() {
         --start 1 \
         --password "$CT_PASSWORD" \
         "${ssh_keys_args[@]}"
-    ok "Container $CT_ID erstellt und gestartet"
+    ok "pct create war erfolgreich (Exit 0 – Spawn wird jetzt separat geprüft)"
+    verify_ct_started "$CT_ID"
 
     wait_for_ct_network "$CT_ID"
     verify_ct_dns "$CT_ID"

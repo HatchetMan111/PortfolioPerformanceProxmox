@@ -61,6 +61,24 @@ Beispiel:
 ... " --id 210 --memory 6144 --vnc-password "meinGeheimesVNCpw"
 ```
 
+> ### ⚠️ Falls „Container hat nach 60 s keine IP bekommen“
+>
+> Ursache ist fast immer die **Architektur-Falle**: ein `pct create --start 1`
+> meldet **Exit 0, auch wenn der Container gar nicht startet** (z. B. wenn
+> versehentlich das `arm64`-Template auf einem `x86_64`-Host erwischt wird –
+> Fehler steht nur auf stderr: `sync_wait … Failed to spawn`). Der Installer
+> prüft deshalb nach dem Anlegen aktiv, ob der Container wirklich `running` ist,
+> und wählt das Template **arch-bewusst** (`_amd64` auf x86_64, `_arm64` auf
+> arm64).
+>
+> Wenn du trotzdem landest (z. B. nach einem abgebrochenen Alt-Lauf):
+>
+> ```bash
+> pct stop 204 && pct destroy 204 --purge
+> # dann Installer erneut starten (er nimmt nun die nächste freie ID):
+> bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/PortfolioPerformanceProxmox/main/install/portfolio-performance.sh)"
+> ```
+
 ---
 
 ## Zugriff

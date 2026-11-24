@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Attrappe für `pveam` – bietet Debian-13-Template (nur das wird unterstützt).
+# Attrappe für `pveam` – bietet Debian-13-Templates (amd64 + arm64), um die
+# arch-bewusste Auswahl zu testen.
 set -uo pipefail
 
 STATE="${MOCK_STATE:?MOCK_STATE fehlt}"
@@ -7,10 +8,14 @@ echo "pveam $*" >>"$STATE/pveam.log"
 
 case "${1:-}" in
     list)
-        echo "local:vztmpl/debian-13-standard_13.0-1_amd64.tar.zst"
+        # Reihenfolge/absichtlich gemischt – der Installer MUSS nach _amd64
+        # filtern (auf x86_64-Host), sonst würde sort -rV das arm64 nehmen.
+        echo "local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst"
+        echo "local:vztmpl/debian-13-standard_13.6-1_amd64.tar.zst"
         ;;
     available)
-        echo "debian-13-standard     13.0-1  pve-container"
+        echo "debian-13-standard_13.6-1_arm64.tar.zst    13.6-1  pve-container"
+        echo "debian-13-standard_13.6-1_amd64.tar.zst    13.6-1  pve-container"
         ;;
     update|download)
         ;;

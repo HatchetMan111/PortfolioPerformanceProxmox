@@ -21,6 +21,12 @@ case "$cmd" in
         ;;
     status)
         if [[ -f "$STATE/ct-created" ]]; then
+            # FAIL_SPAWN simuliert den Live-Bug: create meldet Exit 0,
+            # aber der Container läuft nie (Arch-Mismatch).
+            if [[ -f "$STATE/fail-spawn" ]]; then
+                echo "status: stopped"
+                exit 1
+            fi
             echo "status: running"
         else
             echo "status: stopped"
