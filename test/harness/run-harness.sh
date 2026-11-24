@@ -75,6 +75,13 @@ step "Syntaxprüfung"
 check "bash -n install/portfolio-performance.sh" bash -n "$INSTALLER"
 check "keine CRLF-Zeilen" bash -c "! grep -q $'\r' '$INSTALLER'"
 
+# ── 1b. Einzeiler/Repo-Name (Regressionsschutz gegen falschen Repo-Namen) ──
+step "Einzeiler & Repo-Name"
+check "Installer: kein falscher Name 'PortfolioPerformance-Proxmox'" bash -c "! grep -q 'PortfolioPerformance-Proxmox' '$INSTALLER'"
+check "Installer: ONE_LINER mit korrektem Repo-Namen" bash -c "grep -q 'raw.githubusercontent.com/HatchetMan111/PortfolioPerformanceProxmox/main/install/portfolio-performance.sh' '$INSTALLER'"
+check "README: kein falscher Name 'PortfolioPerformance-Proxmox'" bash -c "! grep -q 'PortfolioPerformance-Proxmox' '$REPO/README.md'"
+check "README: Einzeiler mit korrektem Repo-Namen" bash -c "grep -q 'raw.githubusercontent.com/HatchetMan111/PortfolioPerformanceProxmox/main/install/portfolio-performance.sh' '$REPO/README.md'"
+
 # ── 2. Normalfall ──────────────────────────────────────────────────────────
 step "Installation (Normalfall)"
 RC=$(run_installer normal --yes --password TestPasswort1234)
@@ -193,6 +200,23 @@ check "REST_PORT=9002 übergeben" has "$P/exec.env" "REST_PORT=9002"
 check "noVNC-URL nutzt 9001" has "$P/out.log" ":9001/vnc.html"
 check "REST-URL nutzt 9002" has "$P/out.log" ":9002/v1"
 
+# ── 7b. WebDAV (Mobile-App-Sync) ───────────────────────────────────────────
+step "WebDAV aktiv (--webdav-port 8083)"
+RC=$(run_installer webdav --yes --password TestPasswort1234 --webdav-port 8083)
+W="$ROOT/state-webdav"
+check "WebDAV-Exit 0" test "$RC" -eq 0
+check "WEBDAV_PORT=8083 übergeben" has "$W/exec.env" "WEBDAV_PORT=8083"
+check "WEBDAV_USER übergeben" has "$W/exec.env" "WEBDAV_USER=portfolio"
+check "WEBDAV_PASSWORD übergeben" has "$W/exec.env" "WEBDAV_PASSWORD="
+check "Inner-Script: rclone serve webdav" has "$W/pushed-inner.sh" "rclone serve webdav"
+check "Inner-Script: portfolio-webdav.service" has "$W/pushed-inner.sh" "portfolio-webdav.service"
+check "WebDAV-URL im Log" has "$W/out.log" ":8083/"
+
+step "WebDAV-Port kollidiert mit noVNC-Port"
+RC=$(run_installer wdcol --yes --password TestPasswort1234 --webdav-port 8081)
+check "Kollision Exit != 0" test "$RC" -ne 0
+check "Fehlermeldung 'kollidiert'" has "$ROOT/state-wdcol/out.log" "kollidiert"
+
 # ── 8. Spawn-Fehler wird erkannt (Arch-Mismatch-Falle) ─────────────────────
 step "Spawn-Fehler (pct create Exit 0, aber CT läuft nicht)"
 SP="$ROOT/state-spawnfail"
@@ -216,6 +240,7 @@ bash "$INSTALLER" --help >"$ROOT/help.log" 2>&1
 check "Hilfe zeigt Einzeiler" has "$ROOT/help.log" 'bash -c "$(wget -qLO -'
 check "Hilfe erklärt --port" has "$ROOT/help.log" "--port"
 check "Hilfe erklärt --rest-port" has "$ROOT/help.log" "--rest-port"
+check "Hilfe erklärt --webdav-port" has "$ROOT/help.log" "--webdav-port"
 check "Hilfe erklärt --version" has "$ROOT/help.log" "--version"
 
 # ── Ergebnis ───────────────────────────────────────────────────────────────

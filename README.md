@@ -15,7 +15,7 @@
 > |---|---|---|
 > | 🌐 **noVNC (Hauptkanal)** | Volle PP-GUI im Browser, Port **8081** | Single-User – eine Instanz, die du fernbedienst |
 > | 🔌 **REST-API (optional)** | PP-interne REST-API per nginx-Proxy, Port **8082** | Für Home Assistant / Skripte / MCP – muss in PP aktiviert werden |
-> | 📱 **Mobile-App-Sync** | – | Die „Web Server“-Komponente steckt **nicht** im offiziellen Release; nicht Teil dieses Installers |
+> | 📱 **Mobile-App-Sync (optional)** | WebDAV-Server für die `.portfolio`-Datei, z. B. Port **8083** (nur mit `--webdav-port`) | Die offizielle PP-App (iOS/Android) kann Dateien direkt per **WebDAV** öffnen/synchronisieren – siehe unten |
 >
 > **PP ist Single-User:** eine Desktop-Instanz, die du im Browser fernbedienst.
 > Kein Multi-User-Webserver. Mehrere Personen gleichzeitig bedienen klappt nicht
@@ -26,7 +26,7 @@
 ## Installation (auf dem Proxmox-Host als root)
 
 ```bash
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/PortfolioPerformance-Proxmox/main/install/portfolio-performance.sh)"
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/PortfolioPerformanceProxmox/main/install/portfolio-performance.sh)"
 ```
 
 Der Installer legt einen **unprivilegierten Debian-13-Container** an, lädt das
@@ -36,21 +36,31 @@ richtet zwei systemd-Dienste ein:
 
 - `portfolio-performance-gui` – Xvfb + openbox + PP + x11vnc + noVNC (Port 8081)
 - `nginx` – REST-Proxy :8082 → 127.0.0.1:5712 (Host-Rewrite, Origin entfernt)
+- `portfolio-webdav` – nur mit `--webdav-port`: rclone serve webdav auf `/opt/portfolio-performance/home` (Mobile-App-Sync, Basic Auth)
 
 ### Optionen (hinter dem schließenden Anführungszeichen anhängen)
 
 ```
   --id ID           Container-ID (Default: nächste freie ab 200)
   --hostname NAME   Container-Hostname (Default: portfolio)
-  --memory MB       RAM (Default: 4096)
+  --storage NAME    Storage für rootfs (Default: local-lvm)
   --rootfs GB       Disk (Default: 10)
   --cores N         vCPUs (Default: 2)
-  --ip CIDR         Statt DHCP (mit --gateway)
+  --memory MB       RAM (Default: 4096)
+  --swap MB         Swap (Default: 2048)
+  --bridge BR       Netzwerk-Bridge (Default: vmbr0)
+  --ip CIDR         Statt DHCP, z. B. 192.168.1.50/24 (+ --gateway)
+  --gateway GW      Gateway für statische IP
+  --password PW     Root-Passwort im CT (Default: automatisch generiert)
+  --sshkey PFAD     Public-Key für root-Login im CT
   --port PORT       noVNC-Port (Default: 8081)
   --rest-port PORT  REST-Proxy-Port (Default: 8082)
+  --webdav-port PORT  WebDAV-Port für Mobile-App-Sync (Default: 0 = aus, z. B. 8083)
+  --webdav-user NAME  WebDAV-Benutzer (Default: portfolio)
+  --webdav-password PW  WebDAV-Passwort (Default: automatisch generiert)
   --vnc-password PW VNC-Passwort (Default: automatisch generiert)
   --version VER     PP-Version fixieren (Default: latest)
-  --sshkey PFAD     Public-Key für root-Login im CT
+  --pp-url URL      Direkte PP-Release-Asset-URL (überspringt GitHub-API)
   --force           Vorhandenen CT (gleicher Hostname) neu anlegen
   --yes / -y        Rückfragen überspringen
 ```
@@ -121,6 +131,36 @@ So aktivierst du sie:
    Den Token bei jedem Aufruf als `Authorization: Bearer <token>` mitschicken.
    Vor der Aktivierung liefert der Proxy HTTP 502 – das ist erwartet.
 
+### 📱 Mobile App (iOS/Android) per WebDAV syncen (optional)
+
+Die offizielle **Portfolio Performance Mobile-App** synchronisiert die
+`.portfolio`-Datei über einen Cloud-/WebDAV-Speicher – sie kann Dateien
+**direkt per WebDAV öffnen und speichern**. Eine „Web Server“-Komponente der
+Desktop-App steckt nicht im offiziellen Release; deshalb stellt dieser Installer
+optional selbst einen **WebDAV-Server** bereit, der das persistente
+PP-Verzeichnis `/opt/portfolio-performance/home` ausliefert:
+
+1. Installer mit `--webdav-port` ausführen, z. B.:
+
+   ```bash
+   bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/PortfolioPerformanceProxmox/main/install/portfolio-performance.sh)" --webdav-port 8083
+   ```
+
+   (Optional: `--webdav-user NAME` und `--webdav-password PW`; ohne Passwort
+   wird eines generiert und liegt im Container unter
+   `/opt/portfolio-performance/.webdavpass.txt`.)
+2. Die Zusammenfassung nennt URL, Benutzer und Passwort:
+   `http://<CT-IP>:8083/`
+3. In der PP-Mobile-App eine **WebDAV**-Quelle hinzufügen
+   (Server: `http://<CT-IP>:8083`, Benutzer/Passwort wie oben) und die
+   `.portfolio`-Datei daraus öffnen.
+4. Sync: Die App lädt die Datei vom Server bzw. speichert Änderungen zurück
+   auf den Server – Desktop und App arbeiten so auf derselben Datei.
+
+> ⚠️ **Sicherheit:** WebDAV läuft hier als HTTP + Basic Auth. Nur im LAN oder
+> per VPN (z. B. WireGuard) nutzen, oder einen TLS-Reverse-Proxy
+> (nginx/Caddy mit Zertifikat) vor den Port 8083 schalten.
+
 ---
 
 ## Verwaltung (auf dem Proxmox-Host)
@@ -140,10 +180,13 @@ So aktivierst du sie:
   Browser erreichbar, verwandelt sie aber nicht in einen Multi-User-Dienst.
 - **Software-Rendering.** noVNC läuft über Xvfb/llvmpipe – zum Scrollen und
   Bedienen von PP reicht das; PP braucht keine 3D-Beschleunigung.
-- **Kein Mobile-App-Sync.** Die offizielle „Portfolio Performance Mobile“-App
-  synchronisiert über eine „Web Server“-Komponente, die **nicht** im
-  offiziellen Release-Tarball steckt. Der Installer bietet daher **noVNC**
-  (Browser-Zugriff) + **REST-API** (Automation) – nicht die App-Synchronisierung.
+- **Mobile-App-Sync.** Die offizielle „Portfolio Performance Mobile“-App
+  synchronisiert die `.portfolio`-Datei über Cloud-/WebDAV-Speicher; eine
+  „Web Server“-Komponente der Desktop-App steckt **nicht** im offiziellen
+  Release-Tarball. Der Installer kann daher optional einen **WebDAV-Server**
+  für die PP-Datei bereitstellen (`--webdav-port`, siehe oben) – damit sync't
+  die App direkt mit deinem Proxmox-Container. Die REST-API ist dagegen für
+  Automation (Home Assistant / Skripte / MCP), nicht für die App gedacht.
 - **GPG-Verifikation** erfolgt gegen den offiziellen PP-Schlüssel
   (`E46E6F8FF02E4C83569084589239277F560C95AC`, Andreas Buchen). Ist der Key nicht
   abrufbar, warnt der Installer und überspringt die Prüfung.

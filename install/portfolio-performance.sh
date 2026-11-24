@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  📈 Portfolio Performance – One-Click-Installer (Proxmox VE)
-#  https://github.com/HatchetMan111/PortfolioPerformance-Proxmox
+#  https://github.com/HatchetMan111/PortfolioPerformanceProxmox
 #
 #  Portfolio Performance (portfolio-performance.info, EPL-2.0) ist eine
 #  GTK-Desktop-App (Eclipse RCP, Java 21) – KEINE native Server-/Web-App.
@@ -20,6 +20,7 @@
 #  Architektur im Container (Debian 13):
 #    portfolio-performance-gui.service : Xvfb + openbox + PP + x11vnc + noVNC
 #    nginx (REST-Proxy)                : :REST_PORT -> 127.0.0.1:5712 (Host-Rewrite)
+#    portfolio-webdav.service (opt.)   : :WEBDAV_PORT -> WebDAV auf PP-Home (Mobile-App-Sync)
 #
 #  WICHTIG / Grenzen (ehrlich):
 #    • PP ist Single-User: eine Desktop-Instanz, die du per Browser fernbedienst.
@@ -28,10 +29,12 @@
 #      "MCP Server & REST API" → Haken setzen). Der Proxy steht sofort, ohne
 #      aktivierte API liefert er 502. Das Aktivieren/Pairing machst du im noVNC.
 #    • Die PP-eigene "Web Server"-Mobile-Sync-Komponente steckt NICHT im
-#      offiziellen Release und wird hier nicht versprechen können.
+#      offiziellen Release. Dafür optional: --webdav-port startet einen
+#      WebDAV-Server auf der .portfolio-Datei – die offizielle PP-Mobile-App
+#      (iOS/Android) kann Dateien direkt per WebDAV öffnen/synchronisieren.
 #
 #  Installation (auf dem Proxmox-Host als root):
-#    bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/PortfolioPerformance-Proxmox/main/install/portfolio-performance.sh)"
+#    bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/PortfolioPerformanceProxmox/main/install/portfolio-performance.sh)"
 #
 #  Mit Optionen (direkt hinter dem schließenden Anführungszeichen):
 #    ... " --id 210 --memory 4096
@@ -44,7 +47,7 @@
 set -Eeuo pipefail
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-INSTALLER_VERSION="1.0.0"
+INSTALLER_VERSION="1.1.0"
 APP_NAME="portfolio"            # Kurzname (Logs, Services heißen portfolio*)
 APP_PRETTY="Portfolio Performance"
 CT_HOSTNAME="portfolio"         # CT bekommt den passenden Namen
@@ -73,6 +76,9 @@ CT_SSHKEY=""                    # Pfad ODER URL zu einer Public-Key-Datei (optio
 SSH_KEY_FILE=""
 PORT=8081                       # noVNC-Port (PP-GUI im Browser)
 REST_PORT=8082                  # nginx-Proxy -> PP-REST-API (127.0.0.1:5712)
+WEBDAV_PORT=0                   # 0 = aus; sonst WebDAV-Port für Mobile-App-Sync (z. B. 8083)
+WEBDAV_USER="portfolio"         # Basic-Auth-User für den WebDAV-Server
+WEBDAV_PASSWORD=""              # leer = automatisch generiert (wenn WEBDAV_PORT != 0)
 VNC_PASSWORD=""                 # leer = automatisch generiert
 UNINSTALL=false
 UPDATE=false
@@ -84,7 +90,7 @@ LOG_FILE="/tmp/${APP_NAME}-installer-$(date +%Y%m%d-%H%M%S).log"
 # Der fertige Einzeiler für Hinweise/Fehlerausgaben – exakt kopierbar (Optionen
 # hinter dem schließenden Anführungszeichen; der Installer erkennt sie via $0-Fallback)
 # shellcheck disable=SC2016  # Absicht: Literal, das zum Ausgeben gedacht ist
-ONE_LINER='bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/PortfolioPerformance-Proxmox/main/install/portfolio-performance.sh)"'
+ONE_LINER='bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/PortfolioPerformanceProxmox/main/install/portfolio-performance.sh)"'
 
 # ── Farben & Logging ───────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -411,6 +417,9 @@ parse_args() {
             --sshkey)        CT_SSHKEY="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --port)          PORT="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --rest-port)     REST_PORT="${args[$((i+1))]:-}"; i=$((i+2)) ;;
+            --webdav-port)   WEBDAV_PORT="${args[$((i+1))]:-}"; i=$((i+2)) ;;
+            --webdav-user)   WEBDAV_USER="${args[$((i+1))]:-}"; i=$((i+2)) ;;
+            --webdav-password) WEBDAV_PASSWORD="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --vnc-password)  VNC_PASSWORD="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --version)       PP_VERSION="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --pp-url)        PP_TARBALL_URL="${args[$((i+1))]:-}"; i=$((i+2)) ;;
@@ -425,14 +434,21 @@ parse_args() {
         esac
     done
     # Ports hart validieren – sie landen direkt im systemd-Service/nginx.
+    # WEBDAV_PORT=0 bedeutet "aus" und wird nicht validiert.
     local p
-    for p in "$PORT" "$REST_PORT"; do
+    for p in "$PORT" "$REST_PORT" "$WEBDAV_PORT"; do
+        if [[ "$p" == "0" ]]; then
+            continue
+        fi
         if ! [[ "$p" =~ ^[0-9]+$ ]] || [[ "$p" -lt 1 || "$p" -gt 65535 ]]; then
             die "Ungültiger Port: '$p' (1–65535 erwartet, z. B. --port 8081)"
         fi
     done
     if [[ "$PORT" == "$REST_PORT" ]]; then
         die "noVNC-Port und REST-Proxy-Port dürfen nicht gleich sein ($PORT)."
+    fi
+    if [[ "$WEBDAV_PORT" != "0" && ( "$WEBDAV_PORT" == "$PORT" || "$WEBDAV_PORT" == "$REST_PORT" ) ]]; then
+        die "WebDAV-Port kollidiert mit noVNC/REST-Port ($WEBDAV_PORT) – bitte anderen Port wählen (z. B. 8083)."
     fi
 }
 
@@ -445,7 +461,7 @@ Server-/Web-App. Dieser Installer betreibt die volle PP-GUI im Container unter
 Xvfb und liefert sie per noVNC im Browser aus – von überall erreichbar.
 PP ist Single-User (eine Desktop-Instanz, die du per Browser fernbedienst).
 
-Installation:   bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/PortfolioPerformance-Proxmox/main/install/portfolio-performance.sh)"
+Installation:   bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/PortfolioPerformanceProxmox/main/install/portfolio-performance.sh)"
 
 Optionen (hinter dem schließenden Anführungszeichen anhängen, z. B. ... " --id 210):
   --id ID          Container-ID (Default: nächste freie ab 200)
@@ -462,6 +478,9 @@ Optionen (hinter dem schließenden Anführungszeichen anhängen, z. B. ... " --i
   --sshkey PFAD    Public-Key-Datei oder URL – ssh-key-Login als root im CT
   --port PORT      noVNC-Port (PP-GUI im Browser, Default: 8081)
   --rest-port PORT REST-Proxy-Port der PP-REST-API (Default: 8082)
+  --webdav-port PORT  WebDAV-Port für Mobile-App-Sync (Default: 0 = aus, z. B. 8083)
+  --webdav-user NAME  WebDAV-Benutzername (Default: portfolio)
+  --webdav-password PW  WebDAV-Passwort (Default: automatisch generiert)
   --vnc-password PW  VNC-Passwort für noVNC (Default: automatisch generiert)
   --version VER    PP-Version fixieren (Default: latest, z. B. 0.90.0)
   --pp-url URL     Direkte PP-Release-Asset-URL (überspringt GitHub-API)
@@ -477,6 +496,7 @@ Optionen (hinter dem schließenden Anführungszeichen anhängen, z. B. ... " --i
 Nach der Installation (siehe Zusammenfassung):
   • noVNC (volle PP-GUI im Browser):  http://<CT-IP>:<PORT>/vnc.html
   • REST-API-Proxy (für HA/Skripte):  http://<CT-IP>:<REST_PORT>/v1  (nach Aktivierung)
+  • WebDAV (Mobile-App-Sync, nur mit --webdav-port):  http://<CT-IP>:<WEBDAV_PORT>/
 EOF
 }
 
@@ -489,7 +509,8 @@ write_inner_script() {
 # =============================================================================
 # Portfolio Performance In-Container-Setup (idempotent – safe für Update & Re-Run)
 # Variablen via env: PORT, REST_PORT, VNC_PASSWORD, PP_TARBALL_URL, PP_VERSION,
-#                    HOST_DNS, PP_ASC_URL, PP_SIGNER_FPR
+#                    HOST_DNS, PP_ASC_URL, PP_SIGNER_FPR,
+#                    WEBDAV_PORT (0 = aus), WEBDAV_USER, WEBDAV_PASSWORD
 # =============================================================================
 set -Eeuo pipefail
 trap 'echo "✘ Setup-Fehler: exit $? in Zeile $LINENO: $BASH_COMMAND" >&2' ERR
@@ -505,6 +526,8 @@ die(){ err "$1"; exit 1; }
 : "${PP_TARBALL_URL:?PP_TARBALL_URL fehlt (env)}"
 : "${PP_VERSION:?PP_VERSION fehlt (env)}"
 : "${HOST_DNS:?HOST_DNS fehlt (env)}"
+WEBDAV_PORT="${WEBDAV_PORT:-0}"
+WEBDAV_USER="${WEBDAV_USER:-portfolio}"
 APP_USER="${APP_USER:-portfolio}"
 APP_ROOT=/opt/portfolio-performance
 PP_HOME="${APP_ROOT}/pp"          # entpacktes PP (portfolio/…)
@@ -523,6 +546,13 @@ if ! apt-get install -y -qq openjdk-21-jre-headless libgtk-3-0 libwebkit2gtk-4.1
 fi
 command -v java >/dev/null 2>&1 || die "java (openjdk-21) nicht installiert – apt prüfen."
 command -v Xvfb >/dev/null 2>&1 || die "Xvfb nicht installiert – apt prüfen."
+
+# WebDAV-Server für die Mobile-App (optional) braucht rclone.
+if [ "${WEBDAV_PORT}" != "0" ]; then
+    apt-get install -y -qq rclone >/dev/null \
+        || die "Paket 'rclone' konnte nicht installiert werden (Debian 13?)."
+    command -v rclone >/dev/null 2>&1 || die "rclone nicht installiert – apt prüfen."
+fi
 
 echo ">>> DNS festschreiben (DHCP-DNS des Netzes ist unzuverlässig) ..."
 mkdir -p /etc/dhcp/dhclient-enter-hooks.d
@@ -685,11 +715,56 @@ ln -sf /etc/nginx/sites-available/portfolio-rest /etc/nginx/sites-enabled/portfo
 rm -f /etc/nginx/sites-enabled/default
 nginx -t >/dev/null 2>&1 || die "nginx-Konfiguration ist ungültig (nginx -t oben prüfen)."
 
+# ── WebDAV für Mobile-App-Sync (optional, --webdav-port) ───────────────────
+# Die offizielle PP-Mobile-App (iOS/Android) kann .portfolio-Dateien direkt
+# per WebDAV öffnen/synchronisieren. rclone serve webdav liefert das
+# persistente PP-Home-Verzeichnis (${APP_ROOT}/home) mit Basic Auth aus.
+if [ "${WEBDAV_PORT}" != "0" ]; then
+    echo ">>> WebDAV-Server (:${WEBDAV_PORT} -> ${APP_ROOT}/home) einrichten ..."
+    if [ -n "${WEBDAV_PASSWORD:-}" ]; then
+        printf '%s\n' "${WEBDAV_PASSWORD}" > "${APP_ROOT}/.webdavpass.txt"
+    else
+        printf '%s\n' "$(head -c 12 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 12)" \
+            > "${APP_ROOT}/.webdavpass.txt"
+    fi
+    chmod 600 "${APP_ROOT}/.webdavpass.txt"
+    chown "${APP_USER}:${APP_USER}" "${APP_ROOT}/.webdavpass.txt"
+    WD_PASS="$(cat "${APP_ROOT}/.webdavpass.txt")"
+    cat > /etc/systemd/system/portfolio-webdav.service <<WEBDAVEOF
+[Unit]
+Description=Portfolio Performance WebDAV – Mobile-App-Sync der .portfolio-Datei
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${APP_USER}
+Group=${APP_USER}
+Environment=WEBDAV_PASS=${WD_PASS}
+ExecStart=/bin/sh -c 'exec /usr/bin/rclone serve webdav ${APP_ROOT}/home --addr :${WEBDAV_PORT} --user ${WEBDAV_USER} --pass "\$WEBDAV_PASS" --dir-cache-time 5s'
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
+WEBDAVEOF
+    chmod 600 /etc/systemd/system/portfolio-webdav.service
+else
+    # explizit deaktivieren, falls ein früherer Lauf den Service aktivierte
+    systemctl stop portfolio-webdav >/dev/null 2>&1 || true
+    systemctl disable portfolio-webdav >/dev/null 2>&1 || true
+fi
+
 systemctl daemon-reload
 systemctl enable nginx >/dev/null 2>&1 || true
 systemctl restart nginx
 systemctl enable portfolio-performance-gui >/dev/null 2>&1
 systemctl restart portfolio-performance-gui
+if [ "${WEBDAV_PORT}" != "0" ]; then
+    systemctl enable portfolio-webdav >/dev/null 2>&1 || true
+    systemctl restart portfolio-webdav
+fi
 
 echo ">>> Prüfe noVNC ..."
 NOVNC_OK=""
@@ -705,6 +780,26 @@ if [ -n "$NOVNC_OK" ]; then
 else
     warn "noVNC antwortet (noch) nicht auf Port ${PORT}.
   Logs: journalctl -u portfolio-performance-gui -e && tail -n 30 ${APP_ROOT}/log/portfolio-gui.log"
+fi
+
+if [ "${WEBDAV_PORT}" != "0" ]; then
+    WD_OK=""
+    WD_CODE=""
+    for _ in $(seq 1 10); do
+        WD_CODE=$(curl -s -o /dev/null --max-time 2 -w '%{http_code}' \
+                  "http://127.0.0.1:${WEBDAV_PORT}/" || true)
+        if [ "${WD_CODE}" = "401" ] || [ "${WD_CODE}" = "200" ]; then
+            WD_OK=1
+            break
+        fi
+        sleep 1
+    done
+    if [ -n "$WD_OK" ]; then
+        echo "    WebDAV antwortet auf Port ${WEBDAV_PORT} (HTTP ${WD_CODE} – Basic Auth aktiv)."
+    else
+        warn "WebDAV antwortet (noch) nicht auf Port ${WEBDAV_PORT}.
+  Logs: journalctl -u portfolio-webdav -e"
+    fi
 fi
 
 echo ">>> Aufräumen ..."
@@ -726,6 +821,9 @@ run_inner_setup() {
     pct exec "$ct_id" -- env \
         PORT="$PORT" \
         REST_PORT="$REST_PORT" \
+        WEBDAV_PORT="${WEBDAV_PORT:-0}" \
+        WEBDAV_USER="${WEBDAV_USER:-portfolio}" \
+        WEBDAV_PASSWORD="${WEBDAV_PASSWORD:-}" \
         VNC_PASSWORD="${VNC_PASSWORD:-}" \
         PP_TARBALL_URL="$PP_TARBALL_URL" \
         PP_VERSION="$PP_VERSION" \
@@ -798,6 +896,15 @@ verify_installation() {
   Logs: pct exec $ct_id -- journalctl -u nginx -e"
     fi
 
+    # WebDAV (optional) aktiv?
+    if [[ "${WEBDAV_PORT:-0}" != "0" ]]; then
+        if pct exec "$ct_id" -- systemctl is-active --quiet portfolio-webdav 2>/dev/null; then
+            ok "WebDAV-Service läuft (Mobile-App-Sync auf Port $WEBDAV_PORT)"
+        else
+            warn "WebDAV-Service läuft nicht – Logs: pct exec $ct_id -- journalctl -u portfolio-webdav -e"
+        fi
+    fi
+
     # Erreichbarkeit vom PROXMOX-HOST aus
     local ct_ip="" nc_code="" rest_code=""
     ct_ip=$(get_ct_ip "$ct_id")
@@ -820,6 +927,16 @@ verify_installation() {
             502|503|504) info "REST-Proxy läuft, aber PP-REST-API ist in PP noch NICHT aktiviert (HTTP ${rest_code}) – in PP unter Preferences → „MCP Server & REST API“ aktivieren." ;;
             *) warn "REST-Proxy: HTTP ${rest_code:-unbekannt} von http://${ct_ip}:${REST_PORT}/v1/version" ;;
         esac
+        # WebDAV: 401 (Basic Auth greift) oder 200 ist OK.
+        if [[ "${WEBDAV_PORT:-0}" != "0" ]]; then
+            local wd_code=""
+            wd_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+                      "http://${ct_ip}:${WEBDAV_PORT}/" || true)
+            case "$wd_code" in
+                200|401) ok "WebDAV erreichbar: http://${ct_ip}:${WEBDAV_PORT}/ (HTTP ${wd_code})" ;;
+                *) warn "WebDAV: HTTP ${wd_code:-unbekannt} von http://${ct_ip}:${WEBDAV_PORT}/" ;;
+            esac
+        fi
     fi
 }
 
@@ -830,6 +947,17 @@ print_summary() {
     ct_ip=$(get_ct_ip "$CT_ID")
     local novnc_url="http://${ct_ip:-<CT-IP>}:${PORT}/vnc.html"
     local rest_url="http://${ct_ip:-<CT-IP>}:${REST_PORT}/v1"
+    local webdav_block=""
+    if [[ "${WEBDAV_PORT:-0}" != "0" ]]; then
+        webdav_block="
+
+  ${BOLD}📱 WebDAV – Mobile-App-Sync (offizielle PP-App, iOS/Android)${NC}
+     URL:        http://${ct_ip:-<CT-IP>}:${WEBDAV_PORT}/
+     Benutzer:   ${WEBDAV_USER}
+     Passwort:   ${WEBDAV_PASSWORD:-<im Container: /opt/portfolio-performance/.webdavpass.txt>}
+     In der PP-Mobile-App als WebDAV-Quelle eintragen und die .portfolio-Datei
+     öffnen (liegt persistent unter /opt/portfolio-performance/home)."
+    fi
 
     cat <<SUM
 
@@ -847,6 +975,7 @@ print_summary() {
        Port 5712 (Default) belassen, gewünschte Datei freigeben + speichern.
      • Danach Token per Pairing holen (siehe README): POST ${rest_url%/v1}/v1/auth/requests
      • Ohne Aktivierung liefert der Proxy 502 – das ist erwartet.
+${webdav_block}
 
   ${BOLD}🔄 Verwaltung (auf dem Proxmox-Host)${NC}
      Status:     ${ONE_LINER} --status
@@ -855,8 +984,9 @@ print_summary() {
 
   ${BOLD}ℹ Hinweise${NC}
      • PP ist Single-User – eine Desktop-Instanz, die du im Browser fernbedienst.
-     • Die offizielle Mobile-App synchronisiert über eine „Web Server“-Komponente,
-       die NICHT im Release steckt – dieser Installer bietet daher noVNC + REST-API.
+     • Native Mobile-App-Sync („Web Server“-Komponente) steckt nicht im PP-Release.
+       Mit --webdav-port bekommst du stattdessen WebDAV-Sync der .portfolio-Datei
+       für die offizielle Mobile-App (siehe oben).
      • Web-Frontend läuft über Software-Rendering (llvmpipe) – für flüssiges
        Scrollen in PP reicht das; kein 3D-Bedarf.
 SUM
@@ -910,6 +1040,12 @@ do_install() {
         VNC_PASSWORD=$(openssl rand -base64 18 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 16)
         if [[ -z "$VNC_PASSWORD" ]]; then
             VNC_PASSWORD="portfolio-$(date +%s)"
+        fi
+    fi
+    if [[ "${WEBDAV_PORT:-0}" != "0" && -z "$WEBDAV_PASSWORD" ]]; then
+        WEBDAV_PASSWORD=$(openssl rand -base64 18 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 16)
+        if [[ -z "$WEBDAV_PASSWORD" ]]; then
+            WEBDAV_PASSWORD="portfolio-$(date +%s)"
         fi
     fi
 
@@ -978,6 +1114,23 @@ do_update() {
     # VNC-Passwort beim Update beibehalten, nicht stillrotieren.
     if [[ -z "$VNC_PASSWORD" ]]; then
         VNC_PASSWORD=$(pct exec "$ct_id" -- cat /opt/portfolio-performance/.vncpass.txt 2>/dev/null | head -1 || true)
+    fi
+
+    # WebDAV beim Update beibehalten: Port/User aus der bestehenden Unit lesen,
+    # Passwort aus .webdavpass.txt – es sei denn, explizit per Option gesetzt.
+    if [[ "${WEBDAV_PORT:-0}" == "0" ]]; then
+        WEBDAV_PORT=$(pct exec "$ct_id" -- sh -c 'grep -m1 -oE "addr :[0-9]+" /etc/systemd/system/portfolio-webdav.service 2>/dev/null | grep -oE "[0-9]+"' 2>/dev/null | head -1 || true)
+        if [[ -n "${WEBDAV_PORT:-}" ]]; then
+            WEBDAV_USER=$(pct exec "$ct_id" -- sh -c "grep -m1 -oE -- '--user [^ ]+' /etc/systemd/system/portfolio-webdav.service 2>/dev/null | awk '{print \$NF}'" 2>/dev/null | head -1 || true)
+            if [[ -z "${WEBDAV_USER:-}" ]]; then
+                WEBDAV_USER="portfolio"
+            fi
+        else
+            WEBDAV_PORT=0
+        fi
+    fi
+    if [[ "${WEBDAV_PORT:-0}" != "0" && -z "$WEBDAV_PASSWORD" ]]; then
+        WEBDAV_PASSWORD=$(pct exec "$ct_id" -- cat /opt/portfolio-performance/.webdavpass.txt 2>/dev/null | head -1 || true)
     fi
 
     run_inner_setup "$ct_id"
@@ -1054,6 +1207,22 @@ do_status() {
         warn "Service:   nginx läuft NICHT (REST-Proxy nicht erreichbar)"
     fi
 
+    # WebDAV-Port ermitteln (aus Option oder bestehender Unit)
+    local wd_port="${WEBDAV_PORT:-0}"
+    if [[ "$wd_port" == "0" ]]; then
+        wd_port=$(pct exec "$ct_id" -- sh -c 'grep -m1 -oE "addr :[0-9]+" /etc/systemd/system/portfolio-webdav.service 2>/dev/null | grep -oE "[0-9]+"' 2>/dev/null | head -1 || true)
+        if [[ -z "${wd_port:-}" ]]; then
+            wd_port=0
+        fi
+    fi
+    if [[ "$wd_port" != "0" ]]; then
+        if pct exec "$ct_id" -- systemctl is-active --quiet portfolio-webdav 2>/dev/null; then
+            ok "Service:   portfolio-webdav läuft (Mobile-App-Sync auf Port $wd_port)"
+        else
+            warn "Service:   portfolio-webdav läuft NICHT"
+        fi
+    fi
+
     local ip novnc_code="" rest_code=""
     ip=$(get_ct_ip "$ct_id")
     if [[ -n "$ip" ]]; then
@@ -1069,6 +1238,14 @@ do_status() {
             502|503|504) info "REST-API:  Proxy läuft, PP-API in PP noch nicht aktiviert (HTTP ${rest_code})" ;;
             *) warn "REST-API:  HTTP-Code ${rest_code:-unbekannt} von http://${ip}:${REST_PORT}/v1/version" ;;
         esac
+        if [[ "$wd_port" != "0" ]]; then
+            local wd_code=""
+            wd_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://${ip}:${wd_port}/" || true)
+            case "$wd_code" in
+                200|401) ok "WebDAV:    http://${ip}:${wd_port}/  erreichbar (HTTP ${wd_code})" ;;
+                *) warn "WebDAV:    HTTP-Code ${wd_code:-unbekannt} von http://${ip}:${wd_port}/" ;;
+            esac
+        fi
     else
         warn "Container hat keine IP (läuft er?)."
     fi
